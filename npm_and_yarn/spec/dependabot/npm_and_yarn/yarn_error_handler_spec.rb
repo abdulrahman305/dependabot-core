@@ -113,12 +113,13 @@ RSpec.describe Dependabot::NpmAndYarn::YarnErrorHandler do
 
     context "when the error message contains a node version not satisfy regex and versions are extracted" do
       let(:error_message) do
-        "➤ YN0000: ┌ Project validation\n" \
+        "\e[94m➤\e[39m YN0000: · Yarn 4.0.2\n\e[94m➤\e[39m \e[90mYN0000\e[39m: ┌ Project validation\n" \
           "::group::Project validation\n" \
-          "➤ YN0000: │ The current Node version v20.15.1 does not satisfy the required version 14.21.3.\n" \
-          "::endgroup::\n" \
-          "➤ YN0000: └ Completed\n" \
-          "➤ YN0000: Failed with errors in 0s 6ms"
+          "\e[91m➤\e[39m YN0000: │ \e[31mThe current \e[32mNode\e[39m\e[31m version \e[36m20.13.1\e[39m\e[31m does" \
+          " not satisfy the required version \e[36m20.11.0\e[39m\e[31m.\e[39m\n::endgroup::\n\e[91m➤\e[39m YN0000:" \
+          " \e[31mThe current \e[32mNode\e[39m\e[31m version \e[36m20.13.1\e[39m\e[31m does not satisfy the required " \
+          "version \e[36m20.11.0\e[39m\e[31m.\e[39m\n" \
+          "\e[94m➤\e[39m \e[90mYN0000\e[39m: └ Completed\n\e[91m➤\e[39m YN0000: · Failed with errors in 0s 3ms"
       end
 
       it "raises a ToolVersionNotSupported error with the correct versions" do
@@ -126,8 +127,8 @@ RSpec.describe Dependabot::NpmAndYarn::YarnErrorHandler do
           error_handler.handle_error(error, { yarn_lock: yarn_lock })
         end.to raise_error(Dependabot::ToolVersionNotSupported) do |e| # rubocop:disable Style/MultilineBlockChain
           expect(e.tool_name).to eq("Yarn")
-          expect(e.detected_version).to eq("v20.15.1")
-          expect(e.supported_versions).to eq("14.21.3")
+          expect(e.detected_version).to eq("20.13.1")
+          expect(e.supported_versions).to eq("20.11.0")
         end
       end
     end
@@ -153,6 +154,25 @@ RSpec.describe Dependabot::NpmAndYarn::YarnErrorHandler do
             Dependabot::DependencyFileNotResolvable,
             %r{@segment\/analytics\.js-integration-facebook-pixel}
           )
+      end
+    end
+
+    context "when the error message contains YN0082" do
+      let(:error_message) do
+        "[94m➤[39m YN0000: · Yarn 4.3.1\n" \
+          "[94m➤[39m [90mYN0000[39m: ┌ Resolution step\n::group::Resolution step\n" \
+          "[91m➤[39m YN0082: │ [38;5;173mstring-width-cjs[39m[38;5;37m@[39m[38;5;37mnpm:^4.2.3[39m: " \
+          "No candidates found\n::endgroup::\n" \
+          "[91m➤[39m YN0082: [38;5;173mstring-width-cjs[39m[38;5;37m@[39m[38;5;37mnpm:^4.2.3[39m: " \
+          "No candidates found\n" \
+          "[94m➤[39m [90mYN0000[39m: └ Completed\n" \
+          "[91m➤[39m YN0000: · Failed with errors in 0s 158ms"
+      end
+
+      it "raises a DependencyNotFound error with the correct message" do
+        expect do
+          error_handler.handle_error(error, { yarn_lock: yarn_lock })
+        end.to raise_error(Dependabot::DependencyNotFound, /string-width-cjs@npm:\^4.2.3/)
       end
     end
   end
@@ -288,6 +308,25 @@ RSpec.describe Dependabot::NpmAndYarn::YarnErrorHandler do
         end
       end
     end
+
+    context "when the error message contains YN0082" do
+      let(:error_message) do
+        "[94m➤[39m YN0000: · Yarn 4.3.1\n" \
+          "[94m➤[39m [90mYN0000[39m: ┌ Resolution step\n::group::Resolution step\n" \
+          "[91m➤[39m YN0082: │ [38;5;173mstring-width-cjs[39m[38;5;37m@[39m[38;5;37mnpm:^4.2.3[39m: " \
+          "No candidates found\n::endgroup::\n" \
+          "[91m➤[39m YN0082: [38;5;173mstring-width-cjs[39m[38;5;37m@[39m[38;5;37mnpm:^4.2.3[39m: " \
+          "No candidates found\n" \
+          "[94m➤[39m [90mYN0000[39m: └ Completed\n" \
+          "[91m➤[39m YN0000: · Failed with errors in 0s 158ms"
+      end
+
+      it "raises a DependencyNotFound error with the correct message" do
+        expect do
+          error_handler.handle_yarn_error(error, { yarn_lock: yarn_lock })
+        end.to raise_error(Dependabot::DependencyNotFound, /string-width-cjs@npm:\^4.2.3/)
+      end
+    end
   end
 
   describe "#handle_group_patterns" do
@@ -300,6 +339,31 @@ RSpec.describe Dependabot::NpmAndYarn::YarnErrorHandler do
       it "raises the corresponding error class with the correct message" do
         expect { error_handler.handle_group_patterns(error, usage_error_message, { yarn_lock: yarn_lock }) }
           .to raise_error(Dependabot::PrivateSourceAuthenticationFailure, /authentication token not provided/)
+      end
+    end
+
+    context "when the error message contains ESOCKETTIMEDOUT" do
+      let(:error_message) do
+        "https://registry.us.gympass.cloud/repository/npm-group/@gympass%2fmep-utils: ESOCKETTIMEDOUT"
+      end
+
+      it "raises the corresponding error class with the correct message" do
+        expect { error_handler.handle_group_patterns(error, usage_error_message, { yarn_lock: yarn_lock }) }
+          .to raise_error(Dependabot::PrivateSourceTimedOut, "The following source timed out: " \
+                                                             "registry.us.gympass.cloud/repository/" \
+                                                             "npm-group/@gympass%2fmep-utils")
+      end
+    end
+
+    context "when the error message contains socket hang up" do
+      let(:error_message) do
+        "https://registry.npm.taobao.org/vue-template-compiler: socket hang up"
+      end
+
+      it "raises the corresponding error class with the correct message" do
+        expect { error_handler.handle_group_patterns(error, usage_error_message, { yarn_lock: yarn_lock }) }
+          .to raise_error(Dependabot::PrivateSourceTimedOut, "The following source timed out: " \
+                                                             "registry.npm.taobao.org/vue-template-compiler")
       end
     end
 
