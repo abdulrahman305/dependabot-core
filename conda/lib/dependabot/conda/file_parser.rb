@@ -8,6 +8,7 @@ require "dependabot/file_parsers/base"
 require "dependabot/conda/python_package_classifier"
 require "dependabot/conda/requirement"
 require "dependabot/conda/version"
+require "dependabot/conda/package_manager"
 
 module Dependabot
   module Conda
@@ -25,7 +26,27 @@ module Dependabot
         dependencies.uniq
       end
 
+      sig { returns(Ecosystem) }
+      def ecosystem
+        @ecosystem ||= T.let(
+          Ecosystem.new(
+            name: ECOSYSTEM,
+            package_manager: package_manager,
+            language: nil
+          ),
+          T.nilable(Ecosystem)
+        )
+      end
+
       private
+
+      sig { returns(Ecosystem::VersionManager) }
+      def package_manager
+        @package_manager ||= T.let(
+          CondaPackageManager.new,
+          T.nilable(Ecosystem::VersionManager)
+        )
+      end
 
       sig { returns(T::Array[Dependabot::DependencyFile]) }
       def environment_files
@@ -57,8 +78,10 @@ module Dependabot
       end
 
       sig do
-        params(dependencies: T::Array[T.untyped],
-               file: Dependabot::DependencyFile).returns(T::Array[Dependabot::Dependency])
+        params(
+          dependencies: T::Array[T.untyped],
+          file: Dependabot::DependencyFile
+        ).returns(T::Array[Dependabot::Dependency])
       end
       def parse_conda_dependencies(dependencies, file)
         parsed_dependencies = T.let([], T::Array[Dependabot::Dependency])
@@ -180,8 +203,10 @@ module Dependabot
       end
 
       sig do
-        params(constraint: T.nilable(String),
-               file: Dependabot::DependencyFile).returns(T::Array[T::Hash[Symbol, T.untyped]])
+        params(
+          constraint: T.nilable(String),
+          file: Dependabot::DependencyFile
+        ).returns(T::Array[T::Hash[Symbol, T.untyped]])
       end
       def build_conda_requirements(constraint, file)
         return [] unless constraint && !constraint.empty?

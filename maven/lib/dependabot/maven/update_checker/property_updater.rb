@@ -12,6 +12,7 @@ module Dependabot
     class UpdateChecker
       class PropertyUpdater
         extend T::Sig
+
         require_relative "requirements_updater"
         require_relative "version_finder"
 
@@ -26,8 +27,11 @@ module Dependabot
           ).void
         end
         def initialize(
-          dependency:, dependency_files:, credentials:,
-          ignored_versions:, target_version_details:,
+          dependency:,
+          dependency_files:,
+          credentials:,
+          ignored_versions:,
+          target_version_details:,
           update_cooldown: nil
         )
           @dependency       = dependency

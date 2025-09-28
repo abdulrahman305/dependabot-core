@@ -1,5 +1,7 @@
-# typed: strict
+# typed: strong
 # frozen_string_literal: true
+
+require "dependabot/dependency_graphers"
 
 # This class provides a data object that can be submitted to a repository's dependency submission
 # REST API.
@@ -16,34 +18,46 @@ module GithubApi
 
     sig { returns(String) }
     attr_reader :job_id
+
     sig { returns(String) }
     attr_reader :branch
+
     sig { returns(String) }
     attr_reader :sha
-    sig { returns(String) }
-    attr_reader :directory
+
     sig { returns(String) }
     attr_reader :package_manager
+
     sig { returns(T::Hash[String, T.untyped]) }
     attr_reader :manifests
 
-    sig { params(job: Dependabot::Job, snapshot: Dependabot::DependencySnapshot).void }
-    def initialize(job:, snapshot:)
-      @job_id = T.let(job.id.to_s, String)
-      # TODO: Ensure that the branch is always set for analysis runs
-      #
-      # For purposes of the POC, we'll assume the default branch of `main`
-      # if this is nil, but this isn't a sustainable approach
-      @branch = T.let(job.source.branch || "main", String)
-      @sha = T.let(snapshot.base_commit_sha, String)
-      # TODO: Ensure that directory is always set for analysis runs
-      #
-      # We shouldn't need to default here, this is mostly for type safety
-      # but we should make sure this value is set as we proceed
-      @directory = T.let(job.source.directory || "/", String)
-      @package_manager = T.let(job.package_manager, String)
+    sig { returns(Dependabot::DependencyGraphers::Base) }
+    attr_reader :grapher
 
-      @manifests = T.let(build_manifests(snapshot), T::Hash[String, T.untyped])
+    sig do
+      params(
+        job_id: String,
+        branch: String,
+        sha: String,
+        package_manager: String,
+        dependency_files: T::Array[Dependabot::DependencyFile],
+        dependencies: T::Array[Dependabot::Dependency]
+      ).void
+    end
+    def initialize(job_id:, branch:, sha:, package_manager:, dependency_files:, dependencies:)
+      @job_id = job_id
+      @branch = branch
+      @sha = sha
+      @package_manager = package_manager
+
+      @grapher = T.let(
+        Dependabot::DependencyGraphers.for_package_manager(package_manager).new(
+          dependency_files:,
+          dependencies:
+        ),
+        Dependabot::DependencyGraphers::Base
+      )
+      @manifests = T.let(build_manifests(dependencies), T::Hash[String, T.untyped])
     end
 
     # TODO: Change to a typed structure?
@@ -64,7 +78,6 @@ module GithubApi
           version: Dependabot::VERSION,
           url: SNAPSHOT_DETECTOR_URL
         },
-        scanned: scanned,
         manifests: manifests
       }
     end
@@ -73,12 +86,26 @@ module GithubApi
 
     sig { returns(String) }
     def job_correlator
-      "#{SNAPSHOT_DETECTOR_NAME}-#{package_manager}"
-    end
+      base = "#{SNAPSHOT_DETECTOR_NAME}-#{package_manager}"
 
-    sig { returns(String) }
-    def scanned
-      Time.now.utc.iso8601
+      # If we don't have any manifests (e.g. empty snapshot) fall back to the base
+      return base if manifests.empty?
+
+      path = grapher.relevant_dependency_file.path
+      dirname = File.dirname(path).gsub(%r{^/}, "")
+      basename = File.basename(path)
+
+      # If manifest is at repository root, append the file name
+      return "#{base}-#{basename}" if dirname == ""
+
+      sanitized_path = if dirname.bytesize > 32
+                         # If the dirname is pathologically long, we replace it with a SHA256
+                         Digest::SHA256.hexdigest(dirname)
+                       else
+                         dirname.tr("/", "-")
+                       end
+
+      "#{base}-#{sanitized_path}-#{basename}"
     end
 
     sig { returns(String) }
@@ -88,138 +115,27 @@ module GithubApi
       "refs/heads/#{branch}"
     end
 
-    sig { params(snapshot: Dependabot::DependencySnapshot).returns(T::Hash[String, T.untyped]) }
-    def build_manifests(snapshot)
-      dependencies_by_manifest = {}
-      relevant_manifests(snapshot).each do |file|
-        dependencies_by_manifest[file.path] ||= []
-        file.dependencies.each do |dependency|
-          dependencies_by_manifest[file.path] << dependency
-        end
-      end
+    sig do
+      params(
+        dependencies: T::Array[Dependabot::Dependency]
+      ).returns(T::Hash[String, T.untyped])
+    end
+    def build_manifests(dependencies)
+      return {} if dependencies.empty?
 
-      dependencies_by_manifest.each_with_object({}) do |(file, deps), manifests|
-        # TODO: Confirm whether this approach will work properly with multi-directory job definitions
-        #
-        # For now it is tolerable to omit this and limit our testing accordingly, but we
-        # should behave sensibly in a multi-directory context as well
-
-        # source location is relative to the root of the repo, so we strip the leading slash
-        source_location = file.gsub(%r{^/}, "")
-
-        manifests[file] = {
-          name: file,
+      file = grapher.relevant_dependency_file
+      {
+        file.path => {
+          name: file.path,
           file: {
-            source_location: source_location
+            source_location: file.path.gsub(%r{^/}, "")
           },
           metadata: {
-            ecosystem: T.must(snapshot.ecosystem).name
+            ecosystem: package_manager
           },
-          resolved: deps.uniq.each_with_object({}) do |dep, resolved|
-            resolved[dep.name] = {
-              package_url: build_purl(dep),
-              relationship: relationship_for(dep),
-              scope: scope_for(dep),
-              dependencies: [
-                # TODO: Populate direct child dependencies
-                #
-                # Dependabot::Dependency objects do not include immediate dependencies,
-                # this is a capability each parser will need to have added.
-              ],
-              metadata: {}
-            }
-          end
+          resolved: grapher.resolved_dependencies.to_h
         }
-      end
-    end
-
-    # For each distinct directory in our manifest list, we only want the highest priority manifests available,
-    # this method will filter out manifests for directories that have lockfiles and so on.
-    sig { params(snapshot: Dependabot::DependencySnapshot).returns(T::Array[Dependabot::DependencyFile]) }
-    def relevant_manifests(snapshot)
-      manifests_by_directory = snapshot.dependency_files.each_with_object({}) do |file, dirs|
-        # If the file doesn't have any dependencies assigned to it, then it isn't relevant.
-        next if file.dependencies.empty?
-
-        # Build up a dictionary of unique directories...
-        dirs[file.directory] ||= {}
-        # Add a list of files for each distinct priority...
-        dirs[file.directory][file.priority] ||= []
-        dirs[file.directory][file.priority] << file
-      end
-
-      manifests_by_directory.map do |_directory, manifests_by_priority|
-        # ... and cherry pick the highest priority list for each directory
-        manifests_by_priority[manifests_by_priority.keys.max]
-      end.flatten
-    end
-
-    # Helper function to create a Package URL (purl)
-    #
-    # TODO: Move out of this class.
-    #
-    # It probably makes more sense to assign this to a Dependabot::Dependency
-    # when it is created so the ecosystem-specific parser can own this?
-    #
-    # Let's let it live here for now until we start making changes to core to
-    # fill in some blanks.
-    sig { params(dependency: Dependabot::Dependency).returns(String) }
-    def build_purl(dependency)
-      "pkg:#{purl_pkg_for(dependency.package_manager)}/#{dependency.name}@#{dependency.version}".chomp("@")
-    end
-
-    sig { params(package_manager: String).returns(String) }
-    def purl_pkg_for(package_manager)
-      case package_manager
-      when "bundler"
-        "gem"
-      when "npm_and_yarn", "bun"
-        "npm"
-      when "maven", "gradle"
-        "maven"
-      when "pip", "uv"
-        "pypi"
-      when "cargo"
-        "cargo"
-      when "hex"
-        "hex"
-      when "composer"
-        "composer"
-      when "nuget"
-        "nuget"
-      when "go_modules"
-        "golang"
-      when "docker"
-        "docker"
-      when "github_actions"
-        "github"
-      when "terraform"
-        "terraform"
-      when "pub"
-        "pub"
-      when "elm"
-        "elm"
-      else
-        "generic"
-      end
-    end
-
-    sig { params(dependency: Dependabot::Dependency).returns(String) }
-    def scope_for(dependency)
-      if dependency.production?
-        "runtime"
-      else
-        "development"
-      end
-    end
-
-    sig { params(dep: Dependabot::Dependency).returns(String) }
-    def relationship_for(dep)
-      if dep.direct?
-        "direct"
-      else
-        "indirect"
-      end
+      }
     end
   end
 end

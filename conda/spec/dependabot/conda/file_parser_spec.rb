@@ -32,9 +32,11 @@ RSpec.describe Dependabot::Conda::FileParser do
         dependencies = parser.parse
 
         # Python interpreter is excluded as it's a system dependency, not a PyPI package
-        expect(dependencies.map(&:name)).to match_array(%w(
-          numpy pandas pydantic-settings
-        ))
+        expect(dependencies.map(&:name)).to match_array(
+          %w(
+            numpy pandas pydantic-settings
+          )
+        )
       end
 
       it "extracts conda dependencies with correct attributes" do
@@ -44,12 +46,14 @@ RSpec.describe Dependabot::Conda::FileParser do
 
         expect(numpy_dep.version).to eq("1.26")
         expect(numpy_dep.package_manager).to eq("conda")
-        expect(numpy_dep.requirements).to eq([{
-          requirement: "=1.26",
-          file: "environment.yml",
-          source: nil,
-          groups: ["dependencies"]
-        }])
+        expect(numpy_dep.requirements).to eq(
+          [{
+            requirement: "=1.26",
+            file: "environment.yml",
+            source: nil,
+            groups: ["dependencies"]
+          }]
+        )
       end
 
       it "extracts pip dependencies with correct attributes" do
@@ -58,12 +62,14 @@ RSpec.describe Dependabot::Conda::FileParser do
 
         expect(pydantic_dep.version).to eq("2.0")
         expect(pydantic_dep.package_manager).to eq("conda")
-        expect(pydantic_dep.requirements).to eq([{
-          requirement: ">=2.0",
-          file: "environment.yml",
-          source: nil,
-          groups: ["pip"]
-        }])
+        expect(pydantic_dep.requirements).to eq(
+          [{
+            requirement: ">=2.0",
+            file: "environment.yml",
+            source: nil,
+            groups: ["pip"]
+          }]
+        )
       end
     end
 
@@ -177,6 +183,30 @@ RSpec.describe Dependabot::Conda::FileParser do
         dependencies = parser.parse
         expect(dependencies).to be_empty
       end
+    end
+  end
+
+  describe "#ecosystem" do
+    subject(:ecosystem) { parser.ecosystem }
+
+    let(:environment_content) { fixture("environment_simple.yml") }
+
+    it "has the correct name" do
+      expect(ecosystem.name).to eq "conda"
+    end
+
+    describe "#package_manager" do
+      subject(:package_manager) { ecosystem.package_manager }
+
+      it "returns the correct package manager" do
+        expect(package_manager.name).to eq "conda"
+        expect(package_manager.requirement).to be_nil
+        expect(package_manager.version).to be_nil
+      end
+    end
+
+    it "has no language component" do
+      expect(ecosystem.language).to be_nil
     end
   end
 

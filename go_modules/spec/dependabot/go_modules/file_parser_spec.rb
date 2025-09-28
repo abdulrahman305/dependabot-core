@@ -30,12 +30,81 @@ RSpec.describe Dependabot::GoModules::FileParser do
   let(:files) { [go_mod] }
   let(:parser) { described_class.new(dependency_files: files, source: source, repo_contents_path: repo_contents_path) }
 
+  after do
+    # Reset the environment variable after each test to avoid side effects
+    ENV.delete("GOENV")
+    ENV.delete("GOPROXY")
+    ENV.delete("GOPRIVATE")
+  end
+
   it_behaves_like "a dependency file parser"
 
   it "requires a go.mod to be present" do
     expect do
       described_class.new(dependency_files: [], source: source)
     end.to raise_error(RuntimeError)
+  end
+
+  describe "#initialize" do
+    it "configures the Go toolchain with the values from the go.env file" do
+      go_env = Dependabot::DependencyFile.new(
+        name: "go.env",
+        content: "GOPRIVATE=github.com/dependabot-fixtures",
+        directory: directory
+      )
+      described_class.new(dependency_files: [go_mod, go_env], source: source)
+      expect(`go env GOPRIVATE`.strip).to eq("github.com/dependabot-fixtures")
+    end
+
+    it "does not set the GOENV environment variable if no go.env file is present" do
+      expect(ENV.fetch("GOENV", nil)).to be_nil
+    end
+
+    it "sets the GOPROXY environment variable if there are any goproxy_server credentials passed" do
+      credentials = [
+        Dependabot::Credential.new(
+          {
+            "type" => "goproxy_server",
+            "url" => "https://proxy.example.com"
+          }
+        )
+      ]
+      described_class.new(dependency_files: [go_mod], source: source, credentials: credentials)
+      expect(`go env GOPROXY`.strip).to eq("https://proxy.example.com,direct")
+    end
+
+    it "does not set the GOPROXY environment variable if there are no goproxy_server credentials" do
+      described_class.new(dependency_files: [go_mod], source: source)
+      expect(`go env GOPROXY`.strip).to eq("https://proxy.golang.org,direct")
+    end
+
+    it "does not override the GOPROXY environment variable if it is already set in the go.env file" do
+      go_env = Dependabot::DependencyFile.new(
+        name: "go.env",
+        content: "GOPROXY=https://proxy.example.com",
+        directory: directory
+      )
+      described_class.new(dependency_files: [go_mod, go_env], source: source)
+      expect(`go env GOPROXY`.strip).to eq("https://proxy.example.com")
+    end
+
+    it "does not set the GOPRIVATE environment variable if a goproxy_server credential is passed" do
+      credentials = [
+        Dependabot::Credential.new(
+          {
+            "type" => "goproxy_server",
+            "url" => "https://proxy.example.com"
+          }
+        )
+      ]
+      described_class.new(
+        dependency_files: [go_mod],
+        source: source,
+        credentials: credentials,
+        options: { goprivate: "*" }
+      )
+      expect(`go env GOPRIVATE`.strip).to be_empty
+    end
   end
 
   describe "parse" do
@@ -237,8 +306,10 @@ RSpec.describe Dependabot::GoModules::FileParser do
     describe "a non-existent dependency with a pseudo-version" do
       let(:go_mod_content) do
         go_mod = fixture("go_mods", go_mod_fixture_name)
-        go_mod.sub("rsc.io/quote v1.4.0",
-                   "github.com/hmarr/404 v0.0.0-20181216014959-b89dc648a159")
+        go_mod.sub(
+          "rsc.io/quote v1.4.0",
+          "github.com/hmarr/404 v0.0.0-20181216014959-b89dc648a159"
+        )
       end
 
       it "does not raise an error" do
@@ -253,8 +324,10 @@ RSpec.describe Dependabot::GoModules::FileParser do
 
       let(:go_mod_content) do
         go_mod = fixture("go_mods", go_mod_fixture_name)
-        go_mod.sub("rsc.io/quote v1.4.0",
-                   "gonum.org/v1/plot v0.0.0-20181116082555-59819fff2fb9")
+        go_mod.sub(
+          "rsc.io/quote v1.4.0",
+          "gonum.org/v1/plot v0.0.0-20181116082555-59819fff2fb9"
+        )
       end
 
       it "has the right details" do
@@ -312,9 +385,11 @@ RSpec.describe Dependabot::GoModules::FileParser do
 
       it "parses root file" do
         expect(dependencies.map(&:name))
-          .to eq(%w(
-            rsc.io/qr
-          ))
+          .to eq(
+            %w(
+              rsc.io/qr
+            )
+          )
       end
 
       context "when there is a nested file" do
@@ -323,9 +398,11 @@ RSpec.describe Dependabot::GoModules::FileParser do
 
         it "parses nested file" do
           expect(dependencies.map(&:name))
-            .to eq(%w(
-              rsc.io/qr
-            ))
+            .to eq(
+              %w(
+                rsc.io/qr
+              )
+            )
         end
       end
     end
@@ -366,32 +443,6 @@ RSpec.describe Dependabot::GoModules::FileParser do
         expect(language.requirement).to be_nil
         expect(language.version.to_s).to eq "1.12"
       end
-    end
-  end
-
-  describe "parse support for DependencySubmission" do
-    subject(:dependencies) { parser.parse }
-
-    it "attaches the list of dependencies to the go_mod DependencyFile" do
-      expect(parser.dependency_files.count).to eq(1)
-      dep_file = parser.dependency_files.first
-      expect(dep_file).to equal(go_mod)
-
-      # assert that the dependencies got correctly attached to the dep file
-      expect(dep_file.dependencies).to eq(dependencies.to_set)
-    end
-
-    it "marks indirect dependencies accordingly" do
-      # there are only 2 top-level dependencies
-      expect(dependencies.count(&:direct?)).to eq(2)
-
-      # and 2 indirect dependencies
-      indirect_deps = dependencies.reject(&:direct?)
-      expect(indirect_deps.count).to eq(2)
-
-      indirect_deps_names = indirect_deps.map(&:name)
-      expect(indirect_deps_names).to include("github.com/mattn/go-isatty")
-      expect(indirect_deps_names).to include("github.com/mattn/go-colorable")
     end
   end
 end

@@ -16,8 +16,22 @@ RSpec.describe GithubApi::DependencySubmission do
 
   subject(:dependency_submission) do
     described_class.new(
-      job: job,
-      snapshot: dependabot_snapshot
+      job_id: "9999",
+      branch: branch,
+      sha: sha,
+      package_manager: "bundler",
+      dependency_files: dependency_files,
+      dependencies: parsed_dependencies
+    )
+  end
+
+  let(:parser) do
+    Dependabot::FileParsers.for_package_manager("bundler").new(
+      dependency_files: dependency_files,
+      repo_contents_path: nil,
+      source: source,
+      credentials: [],
+      reject_external_code: false
     )
   end
 
@@ -25,8 +39,9 @@ RSpec.describe GithubApi::DependencySubmission do
   let(:branch) { "main" }
   let(:sha) { "fake-sha" }
 
-  let(:directory) { "/" }
-  let(:directories) { nil }
+  let(:parsed_dependencies) do
+    parser.parse
+  end
 
   let(:source) do
     Dependabot::Source.new(
@@ -37,34 +52,59 @@ RSpec.describe GithubApi::DependencySubmission do
     )
   end
 
-  let(:job) do
-    instance_double(
-      Dependabot::Job,
-      id: 9999,
-      source: source,
-      package_manager: "bundler",
-      repo_contents_path: nil,
-      credentials: [],
-      reject_external_code?: false,
-      experiments: {},
-      dependency_groups: [],
-      security_updates_only?: false,
-      allowed_update?: true
-    )
-  end
+  let(:directory) { "/" }
 
-  let(:job_definition) do
-    {
-      "base_commit_sha" => sha,
-      "base64_dependency_files" => encode_dependency_files(dependency_files)
-    }
-  end
+  describe "::job_correlator" do
+    let(:dependency_files) do
+      [
+        Dependabot::DependencyFile.new(
+          name: "Gemfile",
+          content: fixture("bundler/original/Gemfile"),
+          directory: directory
+        ),
+        Dependabot::DependencyFile.new(
+          name: "Gemfile.lock",
+          content: fixture("bundler/original/Gemfile.lock"),
+          directory: directory
+        )
+      ]
+    end
 
-  let(:dependabot_snapshot) do
-    Dependabot::DependencySnapshot.create_from_job_definition(
-      job: job,
-      job_definition: job_definition
-    )
+    [
+      {
+        context: "with a typical RubyGems project in directory root",
+        directory: "/",
+        expected_correlator: "dependabot-bundler-Gemfile.lock"
+      },
+      {
+        context: "with a RubyGems project in a subdirectory",
+        directory: "ruby/backend-api/",
+        expected_correlator: "dependabot-bundler-ruby-backend-api-Gemfile.lock"
+      },
+      {
+        context: "with mixed case in the file path",
+        directory: "Ruby/backend-api/",
+        expected_correlator: "dependabot-bundler-Ruby-backend-api-Gemfile.lock"
+      },
+      # If we're given something pathologically long, we use a SHA256 to limit length
+      {
+        context: "with a RubyGems project in a pathological directory tree",
+        directory: "lorem/ipsum/dolor/sit/amet/consectetur/adipiscing/elit/nunc/turpis/justo/" \
+                   "maximus/ac/eleifend/sit/amet/malesuada/eu/nisi/donec/faucibus/lobortis/" \
+                   "augue/vitae/venenatis/nunc/euismod/auctor/suspendisse/eget",
+        expected_correlator: /dependabot-bundler-[a-fA-F0-9]{64}-Gemfile.lock/
+      }
+    ].each do |tc|
+      context tc[:context] do
+        let(:directory) { tc[:directory] }
+
+        it "uses the expected value for job.correlator" do
+          payload = dependency_submission.payload
+
+          expect(payload[:job][:correlator]).to match(tc[:expected_correlator])
+        end
+      end
+    end
   end
 
   context "with a basic Gemfile project" do
@@ -91,11 +131,8 @@ RSpec.describe GithubApi::DependencySubmission do
       expect(payload[:detector][:name]).to eq(described_class::SNAPSHOT_DETECTOR_NAME)
       expect(payload[:detector][:url]).to eq(described_class::SNAPSHOT_DETECTOR_URL)
       expect(payload[:detector][:version]).to eq(Dependabot::VERSION)
-      expect(payload[:job][:correlator]).to eq("dependabot-bundler")
+      expect(payload[:job][:correlator]).to eq("dependabot-bundler-Gemfile.lock")
       expect(payload[:job][:id]).to eq("9999")
-
-      # And check we have an iso8601 timestamp
-      expect(payload[:scanned]).to match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
     end
 
     it "generates git attributes correctly" do
@@ -165,7 +202,7 @@ RSpec.describe GithubApi::DependencySubmission do
       ]
     end
 
-    it "generates a valid manifest list" do # rubocop:disable RSpec/MultipleExpectations
+    it "generates a valid manifest list" do
       payload = dependency_submission.payload
 
       # We only expect a lockfile to be returned
@@ -252,22 +289,12 @@ RSpec.describe GithubApi::DependencySubmission do
     end
   end
 
-  # Dependabot's existing behaviour is to fail without a lockfile, which makes sense from an update perspective,
-  # but we should eventually tolerate Gemfile-only projects when we are just asked to produce a graph.
-  #
-  # For now this test covers a corner case, that an empty Gemfile.lock will not result in an empty dependency
-  # submission as we fall back to submitting the Gemfile even though it is lower resolution.
-  context "with an empty Gemfile.lock" do
+  context "without a Gemfile.lock" do
     let(:dependency_files) do
       [
         Dependabot::DependencyFile.new(
           name: "Gemfile",
           content: fixture("bundler/original/Gemfile"),
-          directory: directory
-        ),
-        Dependabot::DependencyFile.new(
-          name: "Gemfile.lock",
-          content: "",
           directory: directory
         )
       ]
