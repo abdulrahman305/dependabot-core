@@ -1,5 +1,10 @@
 [
   {
+    "core": "bazel",
+    "test": "bazel",
+    "ecosystem": "bazel"
+  },
+  {
     "core": "bundler",
     "test": "bundler",
     "ecosystem": "bundler"
@@ -113,6 +118,11 @@
     "core": "terraform",
     "test": "terraform",
     "ecosystem": "terraform"
+  },
+  {
+    "core": "opentofu",
+    "test": "opentofu",
+    "ecosystem": "opentofu"
   },
   {
     "core": "vcpkg",

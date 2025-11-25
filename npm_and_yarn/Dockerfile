@@ -11,11 +11,8 @@ ARG PNPM_VERSION=10.16.0
 # With every major release update, also update npm_and_yarn/lib/dependabot/npm_and_yarn/yarn_package_manager.rb (Section : Update instructions)
 ARG YARN_VERSION=4.9.2
 
-# Check for updates at https://github.com/oven-sh/bun/releases
-ARG BUN_VERSION=1.2.5
-
 # See https://github.com/nodesource/distributions#installation-instructions
-# Always update NODEJS_VERSION with a compatible NPM_VERSION 
+# Always update NODEJS_VERSION with a compatible NPM_VERSION
 # See https://nodejs.org/en/about/previous-releases#looking-for-the-latest-release-of-a-version-branch for more information
 # Note : Always use the Active LTS version
 ARG NODEJS_VERSION=22
@@ -23,7 +20,7 @@ ARG NODEJS_VERSION=22
 # Check for updates at https://github.com/npm/cli/releases
 # This version should be compatible with the NODEJS_VERSION version declared above. See https://nodejs.org/en/download/releases as well
 # With every major release update, also update npm_and_yarn/lib/dependabot/npm_and_yarn/npm_package_manager.rb (Section : Update instructions)
-ARG NPM_VERSION=10.9.3
+ARG NPM_VERSION=11.6.2
 
 # Install Node and npm
 RUN mkdir -p /etc/apt/keyrings \
@@ -34,7 +31,6 @@ RUN mkdir -p /etc/apt/keyrings \
   nodejs \
   && rm -rf /var/lib/apt/lists/* \
   && npm install -g corepack@$COREPACK_VERSION \
-  && npm install -g corepack@$COREPACK_VERSION bun@$BUN_VERSION \
   && rm -rf ~/.npm
 
 USER dependabot
@@ -45,8 +41,12 @@ RUN corepack install pnpm@$PNPM_VERSION --global
 # Install yarn berry and set it to a stable version
 RUN corepack install yarn@$YARN_VERSION --global
 
-# Install npm and set it to a stable version
-RUN corepack install npm@$NPM_VERSION --global
+# Install and activate the latest npm globally
+RUN corepack install npm@$NPM_VERSION --global \
+  # Pre-cache popular older versions (npm 8, 9, 10) for on-demand activation
+  && corepack prepare npm@10 \
+  && corepack prepare npm@9 \
+  && corepack prepare npm@8
 
 ENV DEPENDABOT_NATIVE_HELPERS_PATH="/opt"
 COPY --chown=dependabot:dependabot npm_and_yarn/helpers /opt/npm_and_yarn/helpers

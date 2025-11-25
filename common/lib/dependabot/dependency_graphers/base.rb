@@ -31,6 +31,9 @@ module Dependabot
       sig { returns(T::Boolean) }
       attr_reader :prepared
 
+      sig { returns(T::Boolean) }
+      attr_reader :errored_fetching_subdependencies
+
       sig do
         params(file_parser: Dependabot::FileParsers::Base).void
       end
@@ -38,6 +41,7 @@ module Dependabot
         @file_parser = file_parser
         @dependencies = T.let([], T::Array[Dependabot::Dependency])
         @prepared = T.let(false, T::Boolean)
+        @errored_fetching_subdependencies = T.let(false, T::Boolean)
       end
 
       # Each grapher must implement a heuristic to determine which dependency file should be used as the owner
@@ -61,11 +65,12 @@ module Dependabot
         prepare! unless prepared
 
         @dependencies.each_with_object({}) do |dep, resolved|
-          resolved[dep.name] = ResolvedDependency.new(
-            package_url: build_purl(dep),
+          purl = build_purl(dep)
+          resolved[purl] = ResolvedDependency.new(
+            package_url: purl,
             direct: dep.top_level?,
             runtime: dep.production?,
-            dependencies: fetch_subdependencies(dep)
+            dependencies: safe_fetch_subdependencies(dep).map { |d| build_purl(d) }
           )
         end
       end
@@ -78,6 +83,29 @@ module Dependabot
       sig { returns(T::Array[Dependabot::DependencyFile]) }
       def dependency_files
         file_parser.dependency_files
+      end
+
+      sig { returns(T::Hash[String, Dependabot::Dependency]) }
+      def dependencies_by_name
+        @dependencies_by_name ||= T.let(
+          @dependencies.each_with_object({}) do |dep, hash|
+            hash[dep.name] = dep
+          end,
+          T.nilable(T::Hash[String, Dependabot::Dependency])
+        )
+      end
+
+      sig { params(dependency: Dependabot::Dependency).returns(T::Array[Dependabot::Dependency]) }
+      def safe_fetch_subdependencies(dependency)
+        return [] if @errored_fetching_subdependencies
+
+        fetch_subdependencies(dependency).filter_map do |dependency_name|
+          dependencies_by_name[dependency_name]
+        end
+      rescue StandardError => e
+        @errored_fetching_subdependencies = true
+        Dependabot.logger.error("Error fetching subdependencies: #{e.message}")
+        []
       end
 
       # Each grapher is expected to implement a method to look up the parents of a given dependency.
